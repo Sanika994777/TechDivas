@@ -1,13 +1,13 @@
 """
 Issues router — citizen-facing endpoints:
   POST   /api/issues                     submit issue (multipart/form-data)
-  GET    /api/issues/nearby              map view
+  GET    /api/issues/nearby              map view (sorted by distance)
   GET    /api/issues/mine                my complaints
   GET    /api/issues/{id}                detail (photos + timeline + priority)
-  POST   /api/issues/{id}/upvote         toggle upvote
-  POST   /api/issues/{id}/feedback       satisfied / reopen
+  POST   /api/issues/{id}/upvote         toggle upvote → updates priority
+  POST   /api/issues/{id}/feedback       satisfied / reopen → team notification
   POST   /api/issues/analyze-photo       AI photo analysis
-  GET    /api/issues/similar             duplicate check
+  GET    /api/issues/similar             duplicate check (pre-submit panel)
   GET    /api/geo/reverse                reverse geocode
 """
 from datetime import datetime, timezone
@@ -26,68 +26,48 @@ from app.models import (
 )
 from app.schemas import (
     AnalyzePhotoOut, IssueDetailOut, IssueSummaryOut, MyIssueStats,
-    MyIssuesOut, PhotoOut, PriorityComponents, PriorityOut, ReverseGeoOut,
+    MyIssuesOut, PhotoOut, PriorityOut, ReverseGeoOut,
     TeamOut, TimelineItemOut, UpvoteOut, FeedbackRequest,
 )
 from app.services.cloudinary_service import upload_many
+from app.services import priority as priority_svc
+from app.services import duplicates as dup_svc
 
 router = APIRouter()
 
-# ── SLA config ────────────────────────────────────────────────────────────────
-SLA_DAYS = {
-    "Pothole": 7, "Water Leak": 2, "Garbage": 3, "Streetlight": 5, "Other": 5,
-}
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+ALLOWED_RADII = {500, 1000, 5000}
 
 CATEGORY_TEAM = {
-    "Pothole": "Roads", "Water Leak": "Water",
-    "Garbage": "Sanitation & Electrical", "Streetlight": "Sanitation & Electrical",
+    "Pothole":     "Roads",
+    "Water Leak":  "Water",
+    "Garbage":     "Sanitation & Electrical",
+    "Streetlight": "Sanitation & Electrical",
 }
 
 
-# ── Priority helpers ──────────────────────────────────────────────────────────
-
-def compute_priority(issue: Issue) -> PriorityOut:
-    now = datetime.now(timezone.utc)
-    created = (
-        issue.created_at.replace(tzinfo=timezone.utc)
-        if issue.created_at.tzinfo is None
-        else issue.created_at
-    )
-    sla_days   = SLA_DAYS.get(issue.category.value, 5)
-    days_open  = (now - created).days
-    time_score = min(100.0, (days_open / sla_days) * 100)
-
-    sev_score = (issue.severity / 5) * 100
-    ci_score  = min(100.0, issue.affected_count * 5)
-
-    score = round(sev_score * 0.40 + ci_score * 0.35 + time_score * 0.25, 1)
-
-    if score >= 75:
-        label = "Critical"
-    elif score >= 55:
-        label = "High"
-    elif score >= 35:
-        label = "Medium"
-    else:
-        label = "Low"
-
-    return PriorityOut(
-        score=score,
-        label=label,
-        components=PriorityComponents(
-            severity=round(sev_score, 1),
-            community_impact=round(ci_score, 1),
-            time_unresolved=round(time_score, 1),
-        ),
-    )
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_reference_id(db: Session) -> str:
-    """Generate next CF-YYYY-NNNNNN reference ID (not collision-safe for concurrent inserts,
-    but fine for a hackathon single-instance deployment)."""
+    """Generate next CF-YYYY-NNNNNN reference ID."""
     year  = datetime.now(timezone.utc).year
     count = db.query(func.count(Issue.id)).scalar() or 0
     return f"CF-{year}-{count + 1:06d}"
+
+
+def _haversine_py(lat: float, lng: float, i: Issue) -> float:
+    import math
+    R    = 6_371_000
+    dlat = math.radians(lat - i.lat)
+    dlng = math.radians(lng - i.lng)
+    a    = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat))
+        * math.cos(math.radians(i.lat))
+        * math.sin(dlng / 2) ** 2
+    )
+    return R * 2 * math.asin(math.sqrt(a))
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
@@ -95,19 +75,19 @@ def make_reference_id(db: Session) -> str:
 def issue_to_summary(issue: Issue, distance_m: Optional[float] = None) -> IssueSummaryOut:
     thumbnail = issue.photos[0].url if issue.photos else None
     return IssueSummaryOut(
-        id=issue.id,
-        reference_id=issue.reference_id,
-        title=issue.title,
-        category=issue.category.value,
-        status=issue.status.value,
-        address=issue.address,
-        lat=issue.lat,
-        lng=issue.lng,
-        distance_m=distance_m,
-        affected_count=issue.affected_count,
-        thumbnail=thumbnail,
-        priority=compute_priority(issue),
-        created_at=issue.created_at,
+        id             = issue.id,
+        reference_id   = issue.reference_id,
+        title          = issue.title,
+        category       = issue.category.value,
+        status         = issue.status.value,
+        address        = issue.address,
+        lat            = issue.lat,
+        lng            = issue.lng,
+        distance_m     = distance_m,
+        affected_count = issue.affected_count,
+        thumbnail      = thumbnail,
+        priority       = priority_svc.calculate_priority(issue),
+        created_at     = issue.created_at,
     )
 
 
@@ -126,30 +106,30 @@ def issue_to_detail(
             .first()
         ) is not None
 
-    photos = [PhotoOut(url=p.url, kind=p.kind.value) for p in issue.photos]
-    team   = TeamOut(id=issue.team.id, name=issue.team.name) if issue.team else None
+    photos   = [PhotoOut(url=p.url, kind=p.kind.value) for p in issue.photos]
+    team     = TeamOut(id=issue.team.id, name=issue.team.name) if issue.team else None
     timeline = [
         TimelineItemOut(
-            status=t.status.value,
-            note=t.note,
-            photo_url=t.photo_url,
-            actor_role=t.actor_role,
-            created_at=t.created_at,
+            status     = t.status.value,
+            note       = t.note,
+            photo_url  = t.photo_url,
+            actor_role = t.actor_role,
+            created_at = t.created_at,
         )
         for t in issue.timeline
     ]
 
     return IssueDetailOut(
         **summary.model_dump(),
-        description=issue.description,
-        photos=photos,
-        team=team,
-        parent_issue_id=issue.parent_issue_id,
-        timeline=timeline,
-        satisfaction=issue.satisfaction.value if issue.satisfaction else None,
-        resolved_at=issue.resolved_at,
-        has_upvoted=has_upvoted,
-        is_owner=current_user is not None and issue.reporter_id == current_user.id,
+        description     = issue.description,
+        photos          = photos,
+        team            = team,
+        parent_issue_id = issue.parent_issue_id,
+        timeline        = timeline,
+        satisfaction    = issue.satisfaction.value if issue.satisfaction else None,
+        resolved_at     = issue.resolved_at,
+        has_upvoted     = has_upvoted,
+        is_owner        = current_user is not None and issue.reporter_id == current_user.id,
     )
 
 
@@ -174,19 +154,19 @@ async def analyze_photo(
             {"mime_type": photo.content_type, "data": image_data},
         ])
         import json, re
-        raw = response.text
+        raw   = response.text
         match = re.search(r"\{.*\}", raw, re.DOTALL)
-        data = json.loads(match.group()) if match else {}
+        data  = json.loads(match.group()) if match else {}
         return AnalyzePhotoOut(
-            suggested_category=data.get("suggested_category", "Other"),
-            severity=int(data.get("severity", 3)),
-            short_description=data.get("short_description", "Civic issue detected."),
+            suggested_category = data.get("suggested_category", "Other"),
+            severity           = int(data.get("severity", 3)),
+            short_description  = data.get("short_description", "Civic issue detected."),
         )
     except Exception:
         return AnalyzePhotoOut(
-            suggested_category="Other",
-            severity=3,
-            short_description="Photo uploaded. Please fill in details manually.",
+            suggested_category = "Other",
+            severity           = 3,
+            short_description  = "Photo uploaded. Please fill in details manually.",
         )
 
 
@@ -194,13 +174,22 @@ async def analyze_photo(
 def get_nearby(
     lat: float = Query(...),
     lng: float = Query(...),
-    radius: int = Query(5000),
+    radius: int = Query(5000, description="One of 500, 1000, 5000"),
     category: Optional[str] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Return issues within radius metres using the Haversine formula in SQL."""
-    haversine = text("""
+    """
+    Return issues within radius metres, sorted by distance ascending.
+    radius must be one of 500 | 1000 | 5000.
+    """
+    if radius not in ALLOWED_RADII:
+        raise HTTPException(
+            status_code=422,
+            detail=f"radius must be one of {sorted(ALLOWED_RADII)}.",
+        )
+
+    haversine_sql = text("""
         6371000 * 2 * ASIN(SQRT(
           POWER(SIN(RADIANS(:lat - issues.lat) / 2), 2) +
           COS(RADIANS(:lat)) * COS(RADIANS(issues.lat)) *
@@ -208,27 +197,20 @@ def get_nearby(
         ))
     """).bindparams(lat=lat, lng=lng)
 
-    q = db.query(Issue).filter(haversine <= radius)
+    q = db.query(Issue).filter(haversine_sql <= radius)
     if category:
         q = q.filter(Issue.category == category)
     if status:
         q = q.filter(Issue.status == status)
-    items = q.limit(50).all()
+    items = q.limit(200).all()
 
-    def dist(i: Issue) -> float:
-        import math
-        R = 6371000
-        dlat = math.radians(lat - i.lat)
-        dlng = math.radians(lng - i.lng)
-        a = (
-            math.sin(dlat / 2) ** 2
-            + math.cos(math.radians(lat)) * math.cos(math.radians(i.lat)) * math.sin(dlng / 2) ** 2
-        )
-        return R * 2 * math.asin(math.sqrt(a))
+    # Compute exact distances and sort
+    with_dist = [(i, round(_haversine_py(lat, lng, i), 1)) for i in items]
+    with_dist.sort(key=lambda x: x[1])
 
     return {
-        "items": [issue_to_summary(i, round(dist(i), 1)) for i in items],
-        "total": len(items),
+        "items": [issue_to_summary(i, d) for i, d in with_dist],
+        "total": len(with_dist),
     }
 
 
@@ -237,26 +219,30 @@ def get_my_issues(
     current_user: User = Depends(require_citizen),
     db: Session = Depends(get_db),
 ):
+    """Return the authenticated user's own issues with stats."""
     issues = db.query(Issue).filter(Issue.reporter_id == current_user.id).all()
-    open_statuses = {StatusEnum.Reported, StatusEnum.Assigned, StatusEnum.InProgress, StatusEnum.Reopened}
+    open_statuses = {
+        StatusEnum.Reported, StatusEnum.Assigned,
+        StatusEnum.InProgress, StatusEnum.Reopened,
+    }
     open_count = sum(1 for i in issues if i.status in open_statuses)
     resolved   = [i for i in issues if i.status == StatusEnum.Resolved]
 
     avg_days = 0.0
     if resolved:
-        def days(i: Issue) -> int:
+        def _days(i: Issue) -> int:
             r = i.resolved_at.replace(tzinfo=timezone.utc) if i.resolved_at and i.resolved_at.tzinfo is None else i.resolved_at
-            c = i.created_at.replace(tzinfo=timezone.utc)  if i.created_at.tzinfo  is None else i.created_at
+            c = i.created_at.replace(tzinfo=timezone.utc) if i.created_at.tzinfo is None else i.created_at
             return (r - c).days if r else 0
-        avg_days = round(sum(days(i) for i in resolved) / len(resolved), 1)
+        avg_days = round(sum(_days(i) for i in resolved) / len(resolved), 1)
 
     return MyIssuesOut(
-        items=[issue_to_summary(i) for i in issues],
-        stats=MyIssueStats(
-            total=len(issues),
-            open=open_count,
-            resolved=len(resolved),
-            avg_days=avg_days,
+        items = [issue_to_summary(i) for i in issues],
+        stats = MyIssueStats(
+            total    = len(issues),
+            open     = open_count,
+            resolved = len(resolved),
+            avg_days = avg_days,
         ),
     )
 
@@ -265,35 +251,37 @@ def get_my_issues(
 def get_similar(
     lat: float = Query(...),
     lng: float = Query(...),
-    category: Optional[str] = None,
-    text: Optional[str] = None,
+    category: Optional[str] = Query(None),
+    text: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_citizen),
 ):
-    q = db.query(Issue)
-    if category:
-        q = q.filter(Issue.category == category)
-    items = q.limit(5).all()
-    return {"items": [issue_to_summary(i) for i in items]}
+    """
+    Return up to 5 open issues near (lat,lng) ranked by duplicate likelihood.
+    Used by the pre-submit panel to warn the citizen of potential duplicates.
+    """
+    candidates = dup_svc.get_similar_candidates(lat, lng, category, text, db)
+    return {"items": candidates}
 
 
 @router.post("", response_model=IssueDetailOut, status_code=201)
 async def create_issue(
-    title: str = Form(..., max_length=200),
-    description: str = Form(...),
-    category: str = Form(...),
-    lat: float = Form(...),
-    lng: float = Form(...),
-    address: str = Form(..., max_length=300),
-    photos: List[UploadFile] = File(default=[]),
-    current_user: User = Depends(require_citizen),
-    db: Session = Depends(get_db),
+    title:       str          = Form(..., max_length=200),
+    description: str          = Form(...),
+    category:    str          = Form(...),
+    lat:         float        = Form(...),
+    lng:         float        = Form(...),
+    address:     str          = Form(..., max_length=300),
+    photos:      List[UploadFile] = File(default=[]),
+    current_user: User        = Depends(require_citizen),
+    db:          Session      = Depends(get_db),
 ):
     """
     Submit a new civic issue (citizen only).
     Accepts 0–3 photos as multipart files.
     Validates content type (jpeg/png/webp) and size (≤ 5 MB) before uploading.
-    Returns 502 if Cloudinary is unreachable — issue is NOT created.
+    Runs duplicate detection after creation — if a duplicate is found the issue
+    is linked and the reporter is notified.
     """
     # ── Validate category ──────────────────────────────────────────────────
     try:
@@ -305,9 +293,7 @@ async def create_issue(
             detail=f"Invalid category '{category}'. Valid values: {valid}",
         )
 
-    # ── Upload photos first — abort early if Cloudinary fails ─────────────
-    # upload_many raises 400 (validation) or 502 (Cloudinary error) — no DB
-    # rows have been written yet, so nothing to roll back.
+    # ── Upload photos first ────────────────────────────────────────────────
     photo_urls = await upload_many(photos, min_count=0, max_count=3)
 
     # ── Auto-assign team ───────────────────────────────────────────────────
@@ -317,24 +303,24 @@ async def create_issue(
         team = db.query(Team).filter(Team.name == team_name).first()
 
     # ── Create issue ───────────────────────────────────────────────────────
-    ref = make_reference_id(db)
+    ref   = make_reference_id(db)
     issue = Issue(
-        reference_id=ref,
-        title=title,
-        description=description,
-        category=cat_enum,
-        lat=lat,
-        lng=lng,
-        address=address,
-        status=StatusEnum.Reported,
-        severity=3,
-        affected_count=1,
-        priority_score=0.0,
-        reporter_id=current_user.id,
-        team_id=team.id if team else None,
+        reference_id  = ref,
+        title         = title,
+        description   = description,
+        category      = cat_enum,
+        lat           = lat,
+        lng           = lng,
+        address       = address,
+        status        = StatusEnum.Reported,
+        severity      = 3,
+        affected_count= 1,
+        priority_score= 0.0,
+        reporter_id   = current_user.id,
+        team_id       = team.id if team else None,
     )
     db.add(issue)
-    db.flush()  # get issue.id without committing
+    db.flush()  # get issue.id
 
     # ── Attach photos ──────────────────────────────────────────────────────
     for url in photo_urls:
@@ -342,15 +328,24 @@ async def create_issue(
 
     # ── First StatusHistory row ────────────────────────────────────────────
     db.add(StatusHistory(
-        issue_id=issue.id,
-        status=StatusEnum.Reported,
-        note="Issue reported via CivicFix.",
-        actor_role="citizen",
-        changed_by=current_user.id,
+        issue_id   = issue.id,
+        status     = StatusEnum.Reported,
+        note       = "Issue reported via CivicFix.",
+        actor_role = "citizen",
+        changed_by = current_user.id,
     ))
 
     db.commit()
     db.refresh(issue)
+
+    # ── Duplicate detection (post-commit, own transaction) ─────────────────
+    dup_svc.check_and_link_duplicate(issue, db)
+    db.refresh(issue)
+
+    # ── Recalculate priority ───────────────────────────────────────────────
+    priority_svc.recalculate_and_save(issue, db)
+    db.refresh(issue)
+
     return issue_to_detail(issue, current_user, db)
 
 
@@ -376,9 +371,15 @@ def upvote_issue(
     current_user: User = Depends(require_citizen),
     db: Session = Depends(get_db),
 ):
+    """
+    Toggle upvote on an issue. One upvote per user.
+    Upvoting increments affected_count; un-upvoting decrements it.
+    Priority is recalculated after each toggle.
+    """
     issue = db.get(Issue, issue_id)
     if not issue:
         raise HTTPException(404, "Issue not found.")
+
     existing = db.query(Upvote).filter_by(issue_id=issue_id, user_id=current_user.id).first()
     if existing:
         db.delete(existing)
@@ -388,7 +389,14 @@ def upvote_issue(
         db.add(Upvote(issue_id=issue_id, user_id=current_user.id))
         issue.affected_count += 1
         has_upvoted = True
+
+    db.add(issue)
     db.commit()
+    db.refresh(issue)
+
+    # Recalculate priority after upvote change
+    priority_svc.recalculate_and_save(issue, db)
+
     return UpvoteOut(affected_count=issue.affected_count, has_upvoted=has_upvoted)
 
 
@@ -399,6 +407,12 @@ def issue_feedback(
     current_user: User = Depends(require_citizen),
     db: Session = Depends(get_db),
 ):
+    """
+    Citizen feedback on a Resolved issue (owner only).
+    - "satisfied": records satisfaction, no status change.
+    - "reopen": sets status back to Assigned, writes StatusHistory,
+                and notifies all members of the assigned team.
+    """
     issue = db.get(Issue, issue_id)
     if not issue:
         raise HTTPException(404, "Issue not found.")
@@ -409,19 +423,39 @@ def issue_feedback(
 
     if payload.action == "satisfied":
         issue.satisfaction = SatisfactionEnum.satisfied
+
     elif payload.action == "reopen":
         issue.satisfaction = SatisfactionEnum.reopened
-        issue.status = StatusEnum.Reopened
+        issue.status       = StatusEnum.Assigned
+
         db.add(StatusHistory(
-            issue_id=issue.id,
-            status=StatusEnum.Reopened,
-            note="Citizen indicated issue persists.",
-            actor_role="citizen",
-            changed_by=current_user.id,
+            issue_id   = issue.id,
+            status     = StatusEnum.Assigned,
+            note       = "Citizen indicated issue persists. Re-assigned for follow-up.",
+            actor_role = "citizen",
+            changed_by = current_user.id,
         ))
+
+        # Notify all team members
+        if issue.team_id:
+            from app.models import User as _User
+            from app.routers.notifications import create_notification
+            team_members = db.query(_User).filter(_User.team_id == issue.team_id).all()
+            for member in team_members:
+                create_notification(
+                    user_id  = member.id,
+                    message  = (
+                        f"Issue #{issue.reference_id} has been reopened by the citizen. "
+                        f"Please re-inspect: {issue.title[:80]}"
+                    ),
+                    issue_id = issue.id,
+                    db       = db,
+                )
+
     else:
         raise HTTPException(422, "action must be 'satisfied' or 'reopen'.")
 
+    db.add(issue)
     db.commit()
     db.refresh(issue)
     return issue_to_detail(issue, current_user, db)

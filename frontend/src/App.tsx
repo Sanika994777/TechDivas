@@ -2,20 +2,22 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 
 import { AuthProvider } from "@/context/AuthContext";
-import { ProtectedRoute } from "@/components/shared/ProtectedRoute";
+import { ProtectedRoute, RoleRoute } from "@/components/shared/ProtectedRoute";
 
 import { Navbar } from "@/components/layout/Navbar";
 import { MobileTabBar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { ChatWidget } from "@/components/shared/ChatWidget";
 
-import { LandingPage } from "@/pages/LandingPage";
-import { AuthPage } from "@/pages/AuthPage";
-import { ReportPage } from "@/pages/ReportPage";
-import { NearbyPage } from "@/pages/NearbyPage";
-import { IssueDetailPage } from "@/pages/IssueDetailPage";
-import { MyComplaintsPage } from "@/pages/MyComplaintsPage";
-import { TrackPage } from "@/pages/TrackPage";
+import { LandingPage }          from "@/pages/LandingPage";
+import { AuthPage }             from "@/pages/AuthPage";
+import { ReportPage }           from "@/pages/ReportPage";
+import { NearbyPage }           from "@/pages/NearbyPage";
+import { IssueDetailPage }      from "@/pages/IssueDetailPage";
+import { MyComplaintsPage }     from "@/pages/MyComplaintsPage";
+import { TrackPage }            from "@/pages/TrackPage";
+import { WorkerDashboardPage }  from "@/pages/WorkerDashboardPage";
+import { AdminDashboardPage }   from "@/pages/AdminDashboardPage";
 
 export default function App() {
   return (
@@ -26,9 +28,15 @@ export default function App() {
 
           <div className="flex-1 pb-16 md:pb-0">
             <Routes>
-              <Route path="/" element={<LandingPage />} />
-              <Route path="/login" element={<AuthPage mode="login" />} />
+              {/* Public */}
+              <Route path="/"        element={<LandingPage />} />
+              <Route path="/login"   element={<AuthPage mode="login" />} />
               <Route path="/register" element={<AuthPage mode="register" />} />
+              <Route path="/nearby"  element={<NearbyPage />} />
+              <Route path="/issues/:id" element={<IssueDetailPage />} />
+              <Route path="/track"   element={<TrackPage />} />
+
+              {/* Citizen-only */}
               <Route
                 path="/report"
                 element={
@@ -37,17 +45,32 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
-              <Route path="/nearby" element={<NearbyPage />} />
-              <Route path="/issues/:id" element={<IssueDetailPage />} />
-              <Route path="/track" element={<TrackPage />} />
-
-              {/* Protected — must be logged in */}
               <Route
                 path="/my-complaints"
                 element={
                   <ProtectedRoute>
                     <MyComplaintsPage />
                   </ProtectedRoute>
+                }
+              />
+
+              {/* Worker + Admin */}
+              <Route
+                path="/worker"
+                element={
+                  <RoleRoute roles={["worker", "admin"]}>
+                    <WorkerDashboardPage />
+                  </RoleRoute>
+                }
+              />
+
+              {/* Admin only */}
+              <Route
+                path="/admin"
+                element={
+                  <RoleRoute roles={["admin"]}>
+                    <AdminDashboardPage />
+                  </RoleRoute>
                 }
               />
 

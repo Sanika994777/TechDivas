@@ -14,7 +14,7 @@ from app.core.database import engine, Base
 import app.models  # noqa: F401
 
 # Import routers
-from app.routers import auth, issues, public, track, bot, notifications, admin
+from app.routers import auth, issues, public, track, bot, notifications, admin, worker
 
 
 @asynccontextmanager
@@ -57,4 +57,5 @@ app.include_router(public.router,        prefix="/api/public",        tags=["pub
 app.include_router(track.router,         prefix="/api",               tags=["track"])
 app.include_router(bot.router,           prefix="/api/bot",           tags=["bot"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
-app.include_router(admin.router,         prefix="/api/admin",          tags=["admin"])
+app.include_router(admin.router,         prefix="/api/admin",         tags=["admin"])
+app.include_router(worker.router,        prefix="/api/worker",        tags=["worker"])

@@ -61,21 +61,14 @@ def fmt_ts(dt: datetime) -> str:
     return ist.strftime("%-d %b %Y · %-I:%M %p")      # e.g. "12 Oct 2026 · 9:41 AM"
 
 
-# ── Priority score placeholder (Step 6 will replace this) ────────────────────
+# ── Priority engine (real service) ──────────────────────────────────────────
 
-def compute_priority_score(severity: int, votes: int, days_open: int) -> float:
-    """Weighted placeholder — full engine with Gemini embeddings built in Step 6."""
-    sev    = (severity / 5.0) * 40.0                   # 0–40
-    impact = min(votes / 50.0, 1.0) * 35.0             # 0–35
-    age    = min(days_open / 45.0, 1.0) * 25.0         # 0–25
-    return round(sev + impact + age, 2)
+from app.services.priority import calculate_priority
 
 
-def priority_label(score: float) -> str:
-    if score >= 80: return "Critical"
-    if score >= 55: return "High"
-    if score >= 30: return "Medium"
-    return "Low"
+def compute_priority_score_for_seed(issue: "Issue") -> float:
+    """Delegate to the real priority engine and return the numeric score."""
+    return calculate_priority(issue).score
 
 
 # ── Placeholder photo URLs (no Cloudinary uploads in seed) ───────────────────
@@ -689,8 +682,6 @@ def seed_issues(
                 parent_db_id = parent_obj.id
 
         votes  = spec["votes"]
-        d_open = days if spec["status"] != StatusEnum.Resolved else max(days - 5, 1)
-        pscore = compute_priority_score(spec["sev"], votes, d_open)
 
         # resolved_at for resolved/reopened issues
         resolved_at = None
@@ -706,7 +697,7 @@ def seed_issues(
             severity        = spec["sev"],
             community_impact= votes,
             affected_count  = votes,
-            priority_score  = pscore,
+            priority_score  = 0.0,          # computed below after flush
             address         = spec["addr"],
             lat             = spec["lat"],
             lng             = spec["lng"],
@@ -739,6 +730,10 @@ def seed_issues(
                 changed_by = h["changed_by"],
                 created_at = h["created_at"],
             ))
+
+        # Compute real priority score now that issue has id + created_at
+        issue.priority_score = compute_priority_score_for_seed(issue)
+        db.add(issue)
 
         ref_to_db[spec["ref"]] = issue
         print(f"  [+] issue {spec['ref']} — {spec['status'].value} — {spec['title'][:55]}")
