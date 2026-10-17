@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.36
+# psycopg3 has Python 3.14 wheels; psycopg2-binary does not yet
+psycopg[binary]>=3.2.0
+# pydantic 2.11+ ships pydantic-core built with PyO3 0.23 (supports Python 3.14)
+pydantic[email]>=2.11.0
+pydantic-settings>=2.7.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.12
+cloudinary==1.41.0
+google-generativeai==0.8.3
+httpx==0.27.2
