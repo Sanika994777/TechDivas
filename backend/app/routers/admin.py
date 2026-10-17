@@ -3,6 +3,7 @@ Admin router — admin-only endpoints:
 
   GET  /api/admin/issues                   paginated list, priority-sorted, filterable
   POST /api/admin/issues/{id}/assign       assign team → status Assigned + notify reporter
+  GET  /api/admin/stats?period=7|30|90     analytics dashboard data (pure SQL aggregation)
   GET  /api/admin/duplicates               issues with parent_issue_id set
   POST /api/admin/duplicates/{id}/merge    confirm link, adjust counts, recalc priority
   POST /api/admin/duplicates/{id}/dismiss  clear link, decrement parent count, recalc
@@ -11,15 +12,18 @@ All routes require admin role.
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import case, cast, func
 from sqlalchemy.orm import Session
+from sqlalchemy.types import Date
 
 from app.core.database import get_db
 from app.core.deps import require_admin
-from app.models import Issue, StatusEnum, Team, User
+from app.models import CategoryEnum, Issue, StatusEnum, Team, User
 from app.routers.notifications import create_notification
 from app.routers.issues import issue_to_summary, issue_to_detail
 from app.services import priority as priority_svc
@@ -182,6 +186,213 @@ def admin_assign_issue(
         "ok":            True,
         "issue":         _enrich(issue, db),
         "suggested_team": _suggested_team(issue, db),
+    }
+
+
+# ── Stats ──────────────────────────────────────────────────────────────────────
+
+# SLA in hours per category (matches API_CONTRACT.md)
+_SLA_HOURS: dict[str, int] = {
+    "Pothole":     7  * 24,   # 168 h
+    "Water Leak":  2  * 24,   # 48 h
+    "Garbage":     3  * 24,   # 72 h
+    "Streetlight": 5  * 24,   # 120 h
+    "Other":       5  * 24,   # 120 h
+}
+
+_OPEN_STATUSES = [
+    StatusEnum.Reported,
+    StatusEnum.Assigned,
+    StatusEnum.InProgress,
+    StatusEnum.Reopened,
+]
+
+
+@router.get("/stats", response_model=dict)
+def admin_stats(
+    period: int         = Query(30, description="Lookback window in days (7 | 30 | 90)"),
+    current_user: User  = Depends(require_admin),
+    db: Session         = Depends(get_db),
+):
+    """
+    Analytics dashboard data — all aggregation done in SQL.
+
+    Returns:
+      kpis                  – total, open, resolved, avg_resolution_hours, overdue_count
+      by_category           – [{category, count}]  (all time, descending)
+      by_status             – [{status, count}]     (all time)
+      daily_trend           – last <period> days [{date, reported, resolved}] zero-filled
+      resolution_by_category– [{category, avg_hours}]  resolved issues only
+      resolution_by_team    – [{team, avg_hours}]       resolved issues with a team
+    """
+    now    = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=period)
+
+    # ── 1. KPI — total & open & resolved ─────────────────────────────────────
+    total    = db.query(func.count(Issue.id)).scalar() or 0
+    open_cnt = (
+        db.query(func.count(Issue.id))
+        .filter(Issue.status.in_(_OPEN_STATUSES))
+        .scalar() or 0
+    )
+    resolved_cnt = (
+        db.query(func.count(Issue.id))
+        .filter(Issue.status == StatusEnum.Resolved)
+        .scalar() or 0
+    )
+
+    # ── 2. KPI — avg resolution hours (SQL) ──────────────────────────────────
+    #   epoch gives seconds; divide by 3600 → hours.
+    avg_hours_raw = (
+        db.query(
+            func.avg(
+                func.extract("epoch", Issue.resolved_at - Issue.created_at)
+            )
+        )
+        .filter(
+            Issue.status == StatusEnum.Resolved,
+            Issue.resolved_at.isnot(None),
+        )
+        .scalar()
+    )
+    avg_resolution_hours = round(float(avg_hours_raw or 0.0) / 3600, 1)
+
+    # ── 3. KPI — overdue count ────────────────────────────────────────────────
+    # One SQL scalar per category → sum in Python (5 fast queries, no ORM hydration)
+    overdue_count = 0
+    for cat_enum, sla_h in _SLA_HOURS.items():
+        cat = CategoryEnum(cat_enum)
+        n = (
+            db.query(func.count(Issue.id))
+            .filter(
+                Issue.status.in_(_OPEN_STATUSES),
+                Issue.category == cat,
+                # age in seconds > SLA in seconds
+                func.extract("epoch", now - Issue.created_at) > sla_h * 3600,
+            )
+            .scalar() or 0
+        )
+        overdue_count += n
+
+    # ── 4. By category ────────────────────────────────────────────────────────
+    by_cat_rows = (
+        db.query(Issue.category, func.count(Issue.id).label("cnt"))
+        .group_by(Issue.category)
+        .order_by(func.count(Issue.id).desc())
+        .all()
+    )
+    by_category = [{"category": r.category.value, "count": r.cnt} for r in by_cat_rows]
+
+    # ── 5. By status ──────────────────────────────────────────────────────────
+    by_status_rows = (
+        db.query(Issue.status, func.count(Issue.id).label("cnt"))
+        .group_by(Issue.status)
+        .order_by(func.count(Issue.id).desc())
+        .all()
+    )
+    by_status = [{"status": r.status.value, "count": r.cnt} for r in by_status_rows]
+
+    # ── 6. Daily trend ────────────────────────────────────────────────────────
+    # Two SQL GROUP-BY queries, then zero-fill in Python.
+
+    reported_rows = (
+        db.query(
+            cast(Issue.created_at, Date).label("day"),
+            func.count(Issue.id).label("cnt"),
+        )
+        .filter(Issue.created_at >= cutoff)
+        .group_by("day")
+        .all()
+    )
+    resolved_rows = (
+        db.query(
+            cast(Issue.resolved_at, Date).label("day"),
+            func.count(Issue.id).label("cnt"),
+        )
+        .filter(
+            Issue.resolved_at >= cutoff,
+            Issue.resolved_at.isnot(None),
+        )
+        .group_by("day")
+        .all()
+    )
+
+    reported_map  = {str(r.day): r.cnt for r in reported_rows}
+    resolved_map  = {str(r.day): r.cnt for r in resolved_rows}
+
+    daily_trend: list[dict] = []
+    for offset in range(period):
+        d = (now - timedelta(days=period - 1 - offset)).date()
+        ds = str(d)
+        daily_trend.append({
+            "date":     ds,
+            "reported": reported_map.get(ds, 0),
+            "resolved": resolved_map.get(ds, 0),
+        })
+
+    # ── 7. Resolution by category ─────────────────────────────────────────────
+    res_by_cat_rows = (
+        db.query(
+            Issue.category,
+            (
+                func.avg(
+                    func.extract("epoch", Issue.resolved_at - Issue.created_at)
+                )
+            ).label("avg_secs"),
+        )
+        .filter(
+            Issue.status == StatusEnum.Resolved,
+            Issue.resolved_at.isnot(None),
+        )
+        .group_by(Issue.category)
+        .order_by(Issue.category)
+        .all()
+    )
+    resolution_by_category = [
+        {"category": r.category.value, "avg_hours": round(float(r.avg_secs or 0) / 3600, 1)}
+        for r in res_by_cat_rows
+    ]
+
+    # ── 8. Resolution by team ─────────────────────────────────────────────────
+    res_by_team_rows = (
+        db.query(
+            Team.name.label("team_name"),
+            (
+                func.avg(
+                    func.extract("epoch", Issue.resolved_at - Issue.created_at)
+                )
+            ).label("avg_secs"),
+        )
+        .join(Team, Issue.team_id == Team.id)
+        .filter(
+            Issue.status == StatusEnum.Resolved,
+            Issue.resolved_at.isnot(None),
+            Issue.team_id.isnot(None),
+        )
+        .group_by(Team.name)
+        .order_by(Team.name)
+        .all()
+    )
+    resolution_by_team = [
+        {"team": r.team_name, "avg_hours": round(float(r.avg_secs or 0) / 3600, 1)}
+        for r in res_by_team_rows
+    ]
+
+    # ── Assemble ──────────────────────────────────────────────────────────────
+    return {
+        "period_days": period,
+        "kpis": {
+            "total":                total,
+            "open":                 open_cnt,
+            "resolved":             resolved_cnt,
+            "avg_resolution_hours": avg_resolution_hours,
+            "overdue_count":        overdue_count,
+        },
+        "by_category":             by_category,
+        "by_status":               by_status,
+        "daily_trend":             daily_trend,
+        "resolution_by_category":  resolution_by_category,
+        "resolution_by_team":      resolution_by_team,
     }
 
 
