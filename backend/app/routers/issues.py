@@ -1,9 +1,9 @@
 """
-Issues router — covers citizen-facing endpoints:
-  POST   /api/issues                     submit issue
+Issues router — citizen-facing endpoints:
+  POST   /api/issues                     submit issue (multipart/form-data)
   GET    /api/issues/nearby              map view
   GET    /api/issues/mine                my complaints
-  GET    /api/issues/{id}                detail
+  GET    /api/issues/{id}                detail (photos + timeline + priority)
   POST   /api/issues/{id}/upvote         toggle upvote
   POST   /api/issues/{id}/feedback       satisfied / reopen
   POST   /api/issues/analyze-photo       AI photo analysis
@@ -19,16 +19,17 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, get_current_user_optional, require_citizen
+from app.core.deps import get_current_user_optional, require_citizen
 from app.models import (
-    CategoryEnum, Issue, IssuePhoto, Notification, PhotoKindEnum,
+    CategoryEnum, Issue, IssuePhoto, PhotoKindEnum,
     SatisfactionEnum, StatusEnum, StatusHistory, Team, Upvote, User,
 )
 from app.schemas import (
     AnalyzePhotoOut, IssueDetailOut, IssueSummaryOut, MyIssueStats,
-    MyIssuesOut, PriorityComponents, PriorityOut, ReverseGeoOut,
-    UpvoteOut, FeedbackRequest,
+    MyIssuesOut, PhotoOut, PriorityComponents, PriorityOut, ReverseGeoOut,
+    TeamOut, TimelineItemOut, UpvoteOut, FeedbackRequest,
 )
+from app.services.cloudinary_service import upload_many
 
 router = APIRouter()
 
@@ -39,7 +40,7 @@ SLA_DAYS = {
 
 CATEGORY_TEAM = {
     "Pothole": "Roads", "Water Leak": "Water",
-    "Garbage": "Sanitation", "Streetlight": "Electrical",
+    "Garbage": "Sanitation & Electrical", "Streetlight": "Sanitation & Electrical",
 }
 
 
@@ -47,13 +48,17 @@ CATEGORY_TEAM = {
 
 def compute_priority(issue: Issue) -> PriorityOut:
     now = datetime.now(timezone.utc)
-    created = issue.created_at.replace(tzinfo=timezone.utc) if issue.created_at.tzinfo is None else issue.created_at
-    sla_days = SLA_DAYS.get(issue.category.value, 5)
-    days_open = (now - created).days
+    created = (
+        issue.created_at.replace(tzinfo=timezone.utc)
+        if issue.created_at.tzinfo is None
+        else issue.created_at
+    )
+    sla_days   = SLA_DAYS.get(issue.category.value, 5)
+    days_open  = (now - created).days
     time_score = min(100.0, (days_open / sla_days) * 100)
 
-    sev_score  = (issue.severity / 5) * 100
-    ci_score   = min(100.0, issue.affected_count * 5)
+    sev_score = (issue.severity / 5) * 100
+    ci_score  = min(100.0, issue.affected_count * 5)
 
     score = round(sev_score * 0.40 + ci_score * 0.35 + time_score * 0.25, 1)
 
@@ -78,10 +83,14 @@ def compute_priority(issue: Issue) -> PriorityOut:
 
 
 def make_reference_id(db: Session) -> str:
-    year = datetime.now(timezone.utc).year
+    """Generate next CF-YYYY-NNNNNN reference ID (not collision-safe for concurrent inserts,
+    but fine for a hackathon single-instance deployment)."""
+    year  = datetime.now(timezone.utc).year
     count = db.query(func.count(Issue.id)).scalar() or 0
     return f"CF-{year}-{count + 1:06d}"
 
+
+# ── Serialisers ───────────────────────────────────────────────────────────────
 
 def issue_to_summary(issue: Issue, distance_m: Optional[float] = None) -> IssueSummaryOut:
     thumbnail = issue.photos[0].url if issue.photos else None
@@ -108,53 +117,40 @@ def issue_to_detail(
     db: Optional[Session] = None,
 ) -> IssueDetailOut:
     summary = issue_to_summary(issue)
+
     has_upvoted = False
     if current_user and db:
-        has_upvoted = db.query(Upvote).filter_by(
-            issue_id=issue.id, user_id=current_user.id
-        ).first() is not None
+        has_upvoted = (
+            db.query(Upvote)
+            .filter_by(issue_id=issue.id, user_id=current_user.id)
+            .first()
+        ) is not None
+
+    photos = [PhotoOut(url=p.url, kind=p.kind.value) for p in issue.photos]
+    team   = TeamOut(id=issue.team.id, name=issue.team.name) if issue.team else None
+    timeline = [
+        TimelineItemOut(
+            status=t.status.value,
+            note=t.note,
+            photo_url=t.photo_url,
+            actor_role=t.actor_role,
+            created_at=t.created_at,
+        )
+        for t in issue.timeline
+    ]
 
     return IssueDetailOut(
         **summary.model_dump(),
         description=issue.description,
-        photos=[{"url": p.url, "kind": p.kind.value} for p in issue.photos],
-        team={"id": issue.team.id, "name": issue.team.name} if issue.team else None,
+        photos=photos,
+        team=team,
         parent_issue_id=issue.parent_issue_id,
-        timeline=[{
-            "status": t.status.value,
-            "note": t.note,
-            "photo_url": t.photo_url,
-            "actor_role": t.actor_role,
-            "created_at": t.created_at,
-        } for t in issue.timeline],
+        timeline=timeline,
         satisfaction=issue.satisfaction.value if issue.satisfaction else None,
         resolved_at=issue.resolved_at,
         has_upvoted=has_upvoted,
         is_owner=current_user is not None and issue.reporter_id == current_user.id,
     )
-
-
-# ── Cloudinary upload ─────────────────────────────────────────────────────────
-
-def upload_photo(file: UploadFile, folder: str = "civicfix") -> str:
-    """Upload to Cloudinary and return secure URL. Falls back to placeholder on error."""
-    try:
-        import cloudinary
-        import cloudinary.uploader
-        from app.core.config import settings
-        cloudinary.config(
-            cloud_name=settings.CLOUDINARY_CLOUD_NAME,
-            api_key=settings.CLOUDINARY_API_KEY,
-            api_secret=settings.CLOUDINARY_API_SECRET,
-        )
-        result = cloudinary.uploader.upload(
-            file.file,
-            folder=folder,
-            resource_type="image",
-        )
-        return result["secure_url"]
-    except Exception:
-        return "https://placehold.co/600x400?text=Photo"
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -178,8 +174,8 @@ async def analyze_photo(
             {"mime_type": photo.content_type, "data": image_data},
         ])
         import json, re
-        text = response.text
-        match = re.search(r"\{.*\}", text, re.DOTALL)
+        raw = response.text
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(match.group()) if match else {}
         return AnalyzePhotoOut(
             suggested_category=data.get("suggested_category", "Other"),
@@ -204,7 +200,6 @@ def get_nearby(
     db: Session = Depends(get_db),
 ):
     """Return issues within radius metres using the Haversine formula in SQL."""
-    # Haversine via SQL — works on Postgres
     haversine = text("""
         6371000 * 2 * ASIN(SQRT(
           POWER(SIN(RADIANS(:lat - issues.lat) / 2), 2) +
@@ -220,12 +215,15 @@ def get_nearby(
         q = q.filter(Issue.status == status)
     items = q.limit(50).all()
 
-    def dist(i):
+    def dist(i: Issue) -> float:
         import math
         R = 6371000
         dlat = math.radians(lat - i.lat)
         dlng = math.radians(lng - i.lng)
-        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat)) * math.cos(math.radians(i.lat)) * math.sin(dlng/2)**2
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(math.radians(lat)) * math.cos(math.radians(i.lat)) * math.sin(dlng / 2) ** 2
+        )
         return R * 2 * math.asin(math.sqrt(a))
 
     return {
@@ -242,12 +240,13 @@ def get_my_issues(
     issues = db.query(Issue).filter(Issue.reporter_id == current_user.id).all()
     open_statuses = {StatusEnum.Reported, StatusEnum.Assigned, StatusEnum.InProgress, StatusEnum.Reopened}
     open_count = sum(1 for i in issues if i.status in open_statuses)
-    resolved = [i for i in issues if i.status == StatusEnum.Resolved]
+    resolved   = [i for i in issues if i.status == StatusEnum.Resolved]
+
     avg_days = 0.0
     if resolved:
-        def days(i):
+        def days(i: Issue) -> int:
             r = i.resolved_at.replace(tzinfo=timezone.utc) if i.resolved_at and i.resolved_at.tzinfo is None else i.resolved_at
-            c = i.created_at.replace(tzinfo=timezone.utc) if i.created_at.tzinfo is None else i.created_at
+            c = i.created_at.replace(tzinfo=timezone.utc)  if i.created_at.tzinfo  is None else i.created_at
             return (r - c).days if r else 0
         avg_days = round(sum(days(i) for i in resolved) / len(resolved), 1)
 
@@ -280,50 +279,68 @@ def get_similar(
 
 @router.post("", response_model=IssueDetailOut, status_code=201)
 async def create_issue(
-    title: str = Form(...),
+    title: str = Form(..., max_length=200),
     description: str = Form(...),
     category: str = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
-    address: str = Form(...),
+    address: str = Form(..., max_length=300),
     photos: List[UploadFile] = File(default=[]),
     current_user: User = Depends(require_citizen),
     db: Session = Depends(get_db),
 ):
-    # Auto-assign team by category
+    """
+    Submit a new civic issue (citizen only).
+    Accepts 0–3 photos as multipart files.
+    Validates content type (jpeg/png/webp) and size (≤ 5 MB) before uploading.
+    Returns 502 if Cloudinary is unreachable — issue is NOT created.
+    """
+    # ── Validate category ──────────────────────────────────────────────────
+    try:
+        cat_enum = CategoryEnum(category)
+    except ValueError:
+        valid = [e.value for e in CategoryEnum]
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid category '{category}'. Valid values: {valid}",
+        )
+
+    # ── Upload photos first — abort early if Cloudinary fails ─────────────
+    # upload_many raises 400 (validation) or 502 (Cloudinary error) — no DB
+    # rows have been written yet, so nothing to roll back.
+    photo_urls = await upload_many(photos, min_count=0, max_count=3)
+
+    # ── Auto-assign team ───────────────────────────────────────────────────
     team_name = CATEGORY_TEAM.get(category)
-    team = None
+    team: Optional[Team] = None
     if team_name:
         team = db.query(Team).filter(Team.name == team_name).first()
-        if not team:
-            team = Team(name=team_name, categories=category)
-            db.add(team)
-            db.flush()
 
+    # ── Create issue ───────────────────────────────────────────────────────
     ref = make_reference_id(db)
     issue = Issue(
         reference_id=ref,
         title=title,
         description=description,
-        category=CategoryEnum(category),
+        category=cat_enum,
         lat=lat,
         lng=lng,
         address=address,
         status=StatusEnum.Reported,
         severity=3,
         affected_count=1,
+        priority_score=0.0,
         reporter_id=current_user.id,
         team_id=team.id if team else None,
     )
     db.add(issue)
-    db.flush()
+    db.flush()  # get issue.id without committing
 
-    # Upload photos
-    for f in photos[:3]:
-        url = upload_photo(f)
+    # ── Attach photos ──────────────────────────────────────────────────────
+    for url in photo_urls:
         db.add(IssuePhoto(issue_id=issue.id, url=url, kind=PhotoKindEnum.before))
 
-    # Initial timeline entry
+    # ── First StatusHistory row ────────────────────────────────────────────
     db.add(StatusHistory(
         issue_id=issue.id,
         status=StatusEnum.Reported,
@@ -343,6 +360,10 @@ def get_issue(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
+    """
+    Get full issue detail: photos, status timeline, team, and priority breakdown.
+    Public endpoint — auth is optional (affects has_upvoted / is_owner flags).
+    """
     issue = db.get(Issue, issue_id)
     if not issue:
         raise HTTPException(404, "Issue not found.")
@@ -385,18 +406,22 @@ def issue_feedback(
         raise HTTPException(403, "You can only give feedback on your own issues.")
     if issue.status != StatusEnum.Resolved:
         raise HTTPException(422, "Issue is not resolved yet.")
+
     if payload.action == "satisfied":
         issue.satisfaction = SatisfactionEnum.satisfied
     elif payload.action == "reopen":
         issue.satisfaction = SatisfactionEnum.reopened
         issue.status = StatusEnum.Reopened
         db.add(StatusHistory(
-            issue_id=issue.id, status=StatusEnum.Reopened,
-            note="Citizen indicated issue persists.", actor_role="citizen",
+            issue_id=issue.id,
+            status=StatusEnum.Reopened,
+            note="Citizen indicated issue persists.",
+            actor_role="citizen",
             changed_by=current_user.id,
         ))
     else:
         raise HTTPException(422, "action must be 'satisfied' or 'reopen'.")
+
     db.commit()
     db.refresh(issue)
     return issue_to_detail(issue, current_user, db)
