@@ -183,15 +183,15 @@ def get_nearby(
             detail=f"radius must be one of {sorted(ALLOWED_RADII)}.",
         )
 
-    haversine_sql = text("""
-        6371000 * 2 * ASIN(SQRT(
-          POWER(SIN(RADIANS(:lat - issues.lat) / 2), 2) +
-          COS(RADIANS(:lat)) * COS(RADIANS(issues.lat)) *
-          POWER(SIN(RADIANS(:lng - issues.lng) / 2), 2)
-        ))
-    """).bindparams(lat=lat, lng=lng)
+    haversine_bound = text(
+        "6371000 * 2 * ASIN(SQRT("
+        "  POWER(SIN(RADIANS(:lat - issues.lat) / 2), 2) +"
+        "  COS(RADIANS(:lat)) * COS(RADIANS(issues.lat)) *"
+        "  POWER(SIN(RADIANS(:lng - issues.lng) / 2), 2)"
+        ")) <= :radius"
+    ).bindparams(lat=lat, lng=lng, radius=radius)
 
-    q = db.query(Issue).filter(haversine_sql <= radius)
+    q = db.query(Issue).filter(haversine_bound)
     if category:
         q = q.filter(Issue.category == category)
     if status:
