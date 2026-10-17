@@ -161,7 +161,7 @@ export function TrackPage() {
           {/* Embedded chat assistant */}
           <div>
             <p className="text-xs text-gray-400 mb-2 text-center">Have questions? Ask the CivicFix assistant.</p>
-            <ChatWidget embedded issueId={issue.id} />
+            <ChatWidget embedded initialRef={issue.id} />
           </div>
         </div>
       )}

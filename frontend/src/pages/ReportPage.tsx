@@ -5,7 +5,7 @@ import { PhotoUploader } from "@/components/shared/PhotoUploader";
 import { MapPicker } from "@/components/shared/MapPicker";
 import { StatusBadge } from "@/components/shared/Badges";
 import { ChakraIcon } from "@/components/shared/ChakraIcon";
-import { getAiSuggestion, submitIssue, getIssues } from "@/api/client";
+import { getAiSuggestion, submitIssue, getNearbyIssues } from "@/api/client";
 import type { CivicIssue } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -58,7 +58,7 @@ export function ReportPage() {
   useEffect(() => {
     if (form.photos.length > 0 && !ai && !aiLoading) {
       setAiLoading(true);
-      getAiSuggestion(form.photos)
+      getAiSuggestion(form.photos, form.title, form.description)
         .then(setAi)
         .finally(() => setAiLoading(false));
     }
@@ -67,13 +67,14 @@ export function ReportPage() {
   // Load similar nearby issues for Step 4
   useEffect(() => {
     if (step === 3) {
-      getIssues().then((all) =>
-        setNearby(
-          all
-            .filter((i) => i.category === form.category && i.status !== "Resolved")
-            .slice(0, 3)
-        )
-      );
+      getNearbyIssues(form.lat, form.lng, 1)
+        .then((all) =>
+          setNearby(
+            all
+              .filter((i) => i.category === form.category && i.status !== "Resolved")
+              .slice(0, 3)
+          )
+        );
     }
   }, [step]);
 

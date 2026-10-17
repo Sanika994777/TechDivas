@@ -345,7 +345,7 @@ async def create_issue(
 
 @router.get("/{issue_id}", response_model=IssueDetailOut)
 def get_issue(
-    issue_id: int,
+    issue_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
@@ -353,7 +353,11 @@ def get_issue(
     Get full issue detail: photos, status timeline, team, and priority breakdown.
     Public endpoint — auth is optional (affects has_upvoted / is_owner flags).
     """
-    issue = db.get(Issue, issue_id)
+    try:
+        int_id = int(issue_id)
+        issue = db.get(Issue, int_id)
+    except ValueError:
+        issue = db.query(Issue).filter(Issue.reference_id == issue_id.upper()).first()
     if not issue:
         raise HTTPException(404, "Issue not found.")
     return issue_to_detail(issue, current_user, db)

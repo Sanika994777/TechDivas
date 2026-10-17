@@ -44,12 +44,13 @@ export function MapPicker({ lat, lng, onChange }: MapPickerProps) {
 
   async function reverseGeocode(la: number, lo: number) {
     try {
+      const apiBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${la}&lon=${lo}&format=json`,
+        `${apiBase}/api/geo/reverse?lat=${la}&lng=${lo}`,
         { signal: AbortSignal.timeout(5000) }
       );
       const data = await res.json();
-      const addr = data.display_name ?? `${la.toFixed(5)}, ${lo.toFixed(5)}`;
+      const addr = data.display_name ?? data.address ?? `${la.toFixed(5)}, ${lo.toFixed(5)}`;
       onChange(la, lo, addr);
     } catch {
       onChange(la, lo); // graceful fallback

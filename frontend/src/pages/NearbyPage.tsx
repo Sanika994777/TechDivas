@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Circle } from "react-leaflet";
 import L from "leaflet";
 import { Filter, List, Map as MapIcon, AlertCircle } from "lucide-react";
-import { getIssues } from "@/api/client";
+import { getNearbyIssues } from "@/api/client";
 import type { CivicIssue, IssueStatus, IssueCategory } from "@/types";
 import { IssueCard } from "@/components/shared/IssueCard";
 import { StatusBadge } from "@/components/shared/Badges";
@@ -51,7 +51,7 @@ export function NearbyPage() {
   const [selected, setSelected] = useState<CivicIssue | null>(null);
 
   useEffect(() => {
-    getIssues()
+    getNearbyIssues(PUNE_CENTER[0], PUNE_CENTER[1], 5)
       .then((data) => {
         setIssues(data);
         setFiltered(data);

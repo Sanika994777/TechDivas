@@ -37,6 +37,8 @@ export interface CivicIssue {
   distance?: number;       // km from user
   severity: number;        // 1–5
   aiSuggested?: boolean;
+  /** Internal backend integer id — used only for upvote/feedback endpoints */
+  _numericId?: number;
 }
 
 export interface Stats {

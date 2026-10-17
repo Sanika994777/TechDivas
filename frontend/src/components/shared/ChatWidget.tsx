@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { X, Send, ChevronDown } from "lucide-react";
 import { ChakraIcon } from "./ChakraIcon";
 import { StatusBadge } from "./Badges";
-import { trackComplaint } from "@/api/client";
+import { botMessage } from "@/api/client";
 import type { CivicIssue } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -26,31 +26,39 @@ const BOT_GREET: Msg = {
   chips: QUICK_CHIPS,
 };
 
-async function botReply(userText: string): Promise<Msg[]> {
-  const low = userText.toLowerCase().trim();
-
-  // Track by ID
-  const idMatch = low.match(/cf-\d{4}-\d+/i) ?? userText.match(/CF-\d{4}-\d+/);
-  if (idMatch) {
-    const ref = idMatch[0].toUpperCase().startsWith("CF") ? idMatch[0].toUpperCase() : userText;
-    const issue = await trackComplaint(ref);
-    if (issue) {
-      return [{ from: "bot", issue, text: `Here's the latest on **${issue.id}**:` }];
+async function callBot(userText: string): Promise<Msg[]> {
+  try {
+    const res = await botMessage(userText, "en");
+    const msgs: Msg[] = [{ from: "bot", text: res.reply }];
+    if (res.status_card) {
+      // Map TrackOut status_card to a CivicIssue-like shape for IssueSnippet
+      const sc = res.status_card;
+      const card: CivicIssue = {
+        id: sc.reference_id ?? "",
+        title: `${sc.category ?? "Issue"} in ${sc.area ?? "Pune"}`,
+        description: "",
+        category: (sc.category ?? "Other") as CivicIssue["category"],
+        status: (sc.status ?? "Reported") as CivicIssue["status"],
+        priority: (sc.priority_label ?? "Medium") as CivicIssue["priority"],
+        address: sc.area ?? "",
+        ward: "",
+        lat: 18.5204,
+        lng: 73.8567,
+        photos: [],
+        affectedCount: 1,
+        team: sc.team ?? "",
+        eta: sc.sla_remaining_or_overdue ?? "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        timeline: [],
+        severity: 3,
+      };
+      msgs.push({ from: "bot", issue: card });
     }
-    return [{ from: "bot", text: `I couldn't find complaint "${ref}". Please double-check your reference ID (format: CF-2026-000123).` }];
+    return msgs;
+  } catch {
+    return [{ from: "bot", text: "I'm having trouble reaching the server. Please try again in a moment.", chips: QUICK_CHIPS }];
   }
-
-  if (low.includes("track") || low.includes("status") || low.includes("id")) {
-    return [{ from: "bot", text: "Please share your complaint reference ID (e.g. CF-2026-000123) and I'll pull it up.", chips: [] }];
-  }
-  if (low.includes("how long") || low.includes("time") || low.includes("eta")) {
-    return [{ from: "bot", text: "Average resolution time in Pune is 4–7 days depending on category. Critical issues are prioritised within 24 hours.", chips: QUICK_CHIPS }];
-  }
-  if (low.includes("report") || low.includes("new")) {
-    return [{ from: "bot", text: "To report a new issue, tap the big orange 'Report Issue' button in the menu or visit /report.", chips: [] }];
-  }
-
-  return [{ from: "bot", text: "I'm not sure about that yet. You can track a complaint by sharing its ID, or contact PMC helpline at 020-25506800.", chips: QUICK_CHIPS }];
 }
 
 interface ChatWidgetProps {
@@ -75,7 +83,7 @@ export function ChatWidget({ embedded = false, initialRef }: ChatWidgetProps) {
     setMsgs((m) => [...m, { from: "user", text }, { from: "bot", loading: true }]);
     setBusy(true);
     try {
-      const replies = await botReply(text);
+      const replies = await callBot(text);
       setMsgs((m) => [...m.filter((x) => !x.loading), ...replies]);
     } finally {
       setBusy(false);

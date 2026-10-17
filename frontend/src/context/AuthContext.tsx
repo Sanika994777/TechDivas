@@ -27,6 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
 
   function login(userData: User, token: string) {
+    // Ensure role is persisted — callers pass the role from the API response
     localStorage.setItem("civicfix_user", JSON.stringify(userData));
     localStorage.setItem("civicfix_token", token);
     setUser(userData);

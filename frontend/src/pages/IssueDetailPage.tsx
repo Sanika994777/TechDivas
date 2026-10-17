@@ -3,7 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { MapPin, Users, ThumbsUp, Check, RefreshCw, Info, ArrowLeft } from "lucide-react";
 import { MapContainer, TileLayer, Marker } from "react-leaflet";
 import L from "leaflet";
-import { getIssue, upvoteIssue } from "@/api/client";
+import { getIssue, upvoteIssue, submitFeedback } from "@/api/client";
 import type { CivicIssue } from "@/types";
 import { StatusBadge, PriorityBadge } from "@/components/shared/Badges";
 import { Timeline } from "@/components/shared/Timeline";
@@ -28,6 +28,7 @@ export function IssueDetailPage() {
   const [count, setCount] = useState(0);
   const [galIdx, setGalIdx] = useState(0);
   const [showTooltip, setShowTooltip] = useState(false);
+  const [feedbackDone, setFeedbackDone] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -42,9 +43,19 @@ export function IssueDetailPage() {
 
   async function handleUpvote() {
     if (!issue || voted) return;
-    const res = await upvoteIssue(issue.id);
+    const res = await upvoteIssue(issue.id, issue._numericId);
     setCount(res.affectedCount);
     setVoted(true);
+  }
+
+  async function handleFeedback(action: "satisfied" | "reopen") {
+    if (!issue?._numericId || feedbackDone) return;
+    try {
+      await submitFeedback(issue._numericId, action);
+      setFeedbackDone(true);
+    } catch {
+      // silently ignore — UI stays interactable
+    }
   }
 
   if (loading) return <div className="py-24"><ChakraSpinner /></div>;
@@ -165,14 +176,26 @@ export function IssueDetailPage() {
           {issue.status === "Resolved" && (
             <div className="bg-green-50 border border-green/20 rounded-card p-5">
               <p className="font-semibold text-navy-900 mb-3">Is the issue fully resolved?</p>
-              <div className="flex gap-3">
-                <button className="flex-1 flex items-center justify-center gap-2 bg-green text-white font-semibold py-2.5 rounded-badge hover:bg-green-dark transition-colors min-h-[44px]">
-                  <Check size={16} /> Satisfied
-                </button>
-                <button className="flex-1 flex items-center justify-center gap-2 border-2 border-red-500 text-red-600 font-semibold py-2.5 rounded-badge hover:bg-red-50 transition-colors min-h-[44px]">
-                  <RefreshCw size={16} /> Reopen
-                </button>
-              </div>
+              {feedbackDone ? (
+                <p className="text-green-dark text-sm font-medium flex items-center gap-2">
+                  <Check size={16} /> Thank you for your feedback!
+                </p>
+              ) : (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => handleFeedback("satisfied")}
+                    className="flex-1 flex items-center justify-center gap-2 bg-green text-white font-semibold py-2.5 rounded-badge hover:bg-green-dark transition-colors min-h-[44px]"
+                  >
+                    <Check size={16} /> Satisfied
+                  </button>
+                  <button
+                    onClick={() => handleFeedback("reopen")}
+                    className="flex-1 flex items-center justify-center gap-2 border-2 border-red-500 text-red-600 font-semibold py-2.5 rounded-badge hover:bg-red-50 transition-colors min-h-[44px]"
+                  >
+                    <RefreshCw size={16} /> Reopen
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

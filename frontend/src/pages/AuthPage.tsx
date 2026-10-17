@@ -41,15 +41,13 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
       if (isRegister) {
         const res = await apiRegister(form.name, form.email, form.password);
         auth.login(
-          { name: form.name, email: form.email, role: "citizen" },
+          { name: res.user?.name ?? form.name, email: res.user?.email ?? form.email, role: (res.role ?? "citizen") as "citizen" | "worker" | "admin" },
           res.token
         );
       } else {
         const res = await apiLogin(form.email, form.password);
-        // Derive name from email prefix for mock; real API returns user object
-        const name = form.email.split("@")[0].replace(/[._]/g, " ");
         auth.login(
-          { name, email: form.email, role: "citizen" },
+          { name: res.user?.name ?? form.email.split("@")[0].replace(/[._]/g, " "), email: res.user?.email ?? form.email, role: (res.role ?? "citizen") as "citizen" | "worker" | "admin" },
           res.token
         );
       }

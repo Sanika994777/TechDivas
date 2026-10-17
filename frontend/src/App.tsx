@@ -8,6 +8,7 @@ import { Navbar } from "@/components/layout/Navbar";
 import { MobileTabBar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { ChatWidget } from "@/components/shared/ChatWidget";
+import { WakingBanner } from "@/components/shared/WakingBanner";
 
 import { LandingPage }          from "@/pages/LandingPage";
 import { AuthPage }             from "@/pages/AuthPage";
@@ -79,6 +80,7 @@ export default function App() {
             </Routes>
           </div>
 
+          <WakingBanner />
           <Footer />
           <ChatWidget />
           <MobileTabBar />

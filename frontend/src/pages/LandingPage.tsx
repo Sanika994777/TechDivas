@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, FileText, Search, CheckCircle, AlertCircle } from "lucide-react";
-import { getStats, getIssues } from "@/api/client";
+import { getStats, getRecentlyResolved } from "@/api/client";
 import type { CivicIssue, Stats } from "@/types";
 import { IssueCard } from "@/components/shared/IssueCard";
 import { ChakraIcon, ChakraSpinner } from "@/components/shared/ChakraIcon";
@@ -29,10 +29,10 @@ export function LandingPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getStats(), getIssues()])
+    Promise.all([getStats(), getRecentlyResolved()])
       .then(([s, issues]) => {
         setStats(s);
-        setResolved(issues.filter((i) => i.status === "Resolved" && i.beforePhoto && i.afterPhoto));
+        setResolved(issues);
       })
       .finally(() => setLoading(false));
   }, []);
