@@ -1,0 +1,3 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { TrackPage } from "@/components/civicfix/pages";
+export const Route = createFileRoute("/track")({ head: () => ({ meta: [ { title: "Track a Complaint | CivicFix Pune" }, { name: "description", content: "Check the status and latest update for a Pune civic complaint." }, { property: "og:title", content: "Track a Complaint | CivicFix Pune" }, { property: "og:description", content: "Track a Pune civic report with your reference number—no sign-in required." }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary_large_image" } ] }), component: TrackPage });

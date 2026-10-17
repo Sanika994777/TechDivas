@@ -1,0 +1,3 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { NearbyPage } from "@/components/civicfix/pages";
+export const Route = createFileRoute("/nearby")({ head: () => ({ meta: [ { title: "Nearby Issues | CivicFix Pune" }, { name: "description", content: "Explore civic reports around Pune and support issues affecting your neighbourhood." }, { property: "og:title", content: "Nearby Issues | CivicFix Pune" }, { property: "og:description", content: "Explore nearby Pune civic reports by distance, category, and status." }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary_large_image" } ] }), component: NearbyPage });

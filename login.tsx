@@ -1,0 +1,3 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { AuthPage } from "@/components/civicfix/pages";
+export const Route = createFileRoute("/login")({ head: () => ({ meta: [ { title: "Sign In | CivicFix Pune" }, { name: "description", content: "Sign in to follow your CivicFix reports and neighbourhood updates." }, { property: "og:title", content: "Sign In | CivicFix Pune" }, { property: "og:description", content: "Sign in to CivicFix Pune." }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary_large_image" } ] }), component: () => <AuthPage/> });

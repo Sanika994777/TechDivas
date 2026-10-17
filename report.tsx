@@ -1,0 +1,3 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { ReportPage } from "@/components/civicfix/pages";
+export const Route = createFileRoute("/report")({ head: () => ({ meta: [ { title: "Report an Issue | CivicFix Pune" }, { name: "description", content: "Send a civic issue report to the right Pune ward team." }, { property: "og:title", content: "Report an Issue | CivicFix Pune" }, { property: "og:description", content: "Share the details and location of a neighbourhood issue in Pune." }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary_large_image" } ] }), component: ReportPage });

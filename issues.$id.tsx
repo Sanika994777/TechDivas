@@ -1,0 +1,4 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { IssueDetailPage } from "@/components/civicfix/pages";
+export const Route = createFileRoute("/issues/$id")({ head: ({ params }) => ({ meta: [ { title: `Issue ${params.id} | CivicFix Pune` }, { name: "description", content: `Status, ward updates, and community support for civic issue ${params.id} in Pune.` }, { property: "og:title", content: `Issue ${params.id} | CivicFix Pune` }, { property: "og:description", content: `Follow updates and support civic issue ${params.id}.` }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary_large_image" } ] }), component: IssueRoute });
+function IssueRoute() { const { id } = Route.useParams(); return <IssueDetailPage id={id}/>; }
