@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Eye, EyeOff, Loader2, CheckCircle } from "lucide-react";
 import { ChakraIcon } from "@/components/shared/ChakraIcon";
-import { login, register } from "@/api/client";
+import { login as apiLogin, register as apiRegister } from "@/api/client";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 interface AuthPageProps {
@@ -12,7 +13,10 @@ interface AuthPageProps {
 export function AuthPage({ mode = "login" }: AuthPageProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const auth = useAuth();
   const isRegister = mode === "register" || location.pathname === "/register";
+  // Where to go after login — default to "/"
+  const from = (location.state as { from?: string })?.from ?? "/";
 
   const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [showPw, setShowPw] = useState(false);
@@ -35,12 +39,22 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
     setLoading(true);
     try {
       if (isRegister) {
-        await register(form.name, form.email, form.password);
+        const res = await apiRegister(form.name, form.email, form.password);
+        auth.login(
+          { name: form.name, email: form.email, role: "citizen" },
+          res.token
+        );
       } else {
-        await login(form.email, form.password);
+        const res = await apiLogin(form.email, form.password);
+        // Derive name from email prefix for mock; real API returns user object
+        const name = form.email.split("@")[0].replace(/[._]/g, " ");
+        auth.login(
+          { name, email: form.email, role: "citizen" },
+          res.token
+        );
       }
       setSuccess(true);
-      setTimeout(() => navigate("/"), 1200);
+      setTimeout(() => navigate(from, { replace: true }), 1000);
     } catch {
       setErrors({ form: "Something went wrong. Please try again." });
     } finally {

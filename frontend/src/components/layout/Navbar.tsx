@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { NavLink, Link } from "react-router-dom";
+import { NavLink, Link, useNavigate } from "react-router-dom";
 import { Menu, X, ChevronDown, User, LogOut, FileText, Map, Clipboard, Search, ShieldCheck } from "lucide-react";
 import { ChakraIcon } from "@/components/shared/ChakraIcon";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 const NAV_LINKS = [
@@ -12,12 +13,10 @@ const NAV_LINKS = [
   { to: "/track", label: "Track Complaint" },
 ];
 
-// Mock auth state — replace with real context
-const MOCK_USER = null as null | { name: string; avatar?: string };
-
 export function Navbar() {
   const [open, setOpen] = useState(false);
   const [lang, setLang] = useState<"EN" | "HI">("EN");
+  const { user, logout } = useAuth();
 
   return (
     <header className="sticky top-0 z-30 bg-white shadow-sm">
@@ -77,8 +76,8 @@ export function Navbar() {
           </Link>
 
           {/* Auth */}
-          {MOCK_USER ? (
-            <UserMenu name={MOCK_USER.name} />
+          {user ? (
+            <UserMenu name={user.name} onLogout={logout} />
           ) : (
             <Link
               to="/login"
@@ -151,8 +150,16 @@ export function Navbar() {
   );
 }
 
-function UserMenu({ name }: { name: string }) {
+function UserMenu({ name, onLogout }: { name: string; onLogout: () => void }) {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+
+  function handleLogout() {
+    setOpen(false);
+    onLogout();
+    navigate("/");
+  }
+
   return (
     <div className="relative">
       <button
@@ -171,7 +178,7 @@ function UserMenu({ name }: { name: string }) {
             <Clipboard size={14} /> My Complaints
           </Link>
           <hr className="my-1 border-gray-100" />
-          <button className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 w-full">
+          <button onClick={handleLogout} className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 w-full">
             <LogOut size={14} /> Sign Out
           </button>
         </div>
