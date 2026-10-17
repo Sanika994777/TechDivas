@@ -13,7 +13,6 @@ Issues router — citizen-facing endpoints:
 from datetime import datetime, timezone
 from typing import List, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -138,36 +137,31 @@ def issue_to_detail(
 @router.post("/analyze-photo", response_model=AnalyzePhotoOut)
 async def analyze_photo(
     photo: UploadFile = File(...),
+    title: str = Form(""),
+    description: str = Form(""),
     current_user: User = Depends(require_citizen),
 ):
-    """AI photo analysis — Gemini with keyword fallback."""
-    try:
-        import google.generativeai as genai
-        from app.core.config import settings
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        image_data = await photo.read()
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content([
-            "Analyze this civic issue photo. Respond in JSON only with keys: "
-            "suggested_category (one of: Pothole, Water Leak, Garbage, Streetlight, Other), "
-            "severity (integer 1-5), short_description (max 100 chars).",
-            {"mime_type": photo.content_type, "data": image_data},
-        ])
-        import json, re
-        raw   = response.text
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        data  = json.loads(match.group()) if match else {}
-        return AnalyzePhotoOut(
-            suggested_category = data.get("suggested_category", "Other"),
-            severity           = int(data.get("severity", 3)),
-            short_description  = data.get("short_description", "Civic issue detected."),
-        )
-    except Exception:
-        return AnalyzePhotoOut(
-            suggested_category = "Other",
-            severity           = 3,
-            short_description  = "Photo uploaded. Please fill in details manually.",
-        )
+    """
+    AI photo analysis via Gemini 1.5-Flash (services.external).
+
+    Accepts optional ``title`` and ``description`` form fields so that the
+    keyword-rule fallback has text to work with when Gemini is unavailable.
+    Always returns 200 — never raises to the caller.
+    """
+    from app.services.external import analyze_photo as _analyze
+
+    image_bytes = await photo.read()
+    result = await _analyze(
+        image_bytes,
+        content_type=photo.content_type or "image/jpeg",
+        title=title,
+        description=description,
+    )
+    return AnalyzePhotoOut(
+        suggested_category=result["suggested_category"],
+        severity=result["severity"],
+        short_description=result["short_description"],
+    )
 
 
 @router.get("/nearby", response_model=dict)

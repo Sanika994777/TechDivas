@@ -1,64 +1,68 @@
-from datetime import datetime, timezone
+"""
+routers/track.py
+────────────────────────────────────────────────────────────────────────────
+GET /api/track/{reference_id}
 
-from fastapi import APIRouter, HTTPException
+Public endpoint — no auth required.
+
+Rate-limited to 20 requests per minute per IP via a simple in-memory
+sliding-window counter (resets every 60 s window).  Returns HTTP 429
+with a friendly message on breach.
+
+Response contract (no PII, no exact coordinates, no worker names):
+  reference_id, status, priority_label, category, area, team,
+  last_update {note, time}, days_open, sla_remaining_or_overdue,
+  has_after_photo, steps []
+"""
+from __future__ import annotations
+
+import time
+from collections import defaultdict
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from fastapi import Depends
 
 from app.core.database import get_db
 from app.models import Issue, StatusEnum
 from app.schemas import TrackOut, TrackStep
+from app.services.bot import SLA_DAYS, build_status_payload
 
 router = APIRouter()
 
-SLA_DAYS = {
-    "Pothole": 7, "Water Leak": 2, "Garbage": 3, "Streetlight": 5, "Other": 5,
-}
+# ── In-memory rate limiter (20 req / 60 s per IP) ────────────────────────────
+
+_RATE_LIMIT   = 20          # max requests per window
+_WINDOW_SECS  = 60          # sliding window in seconds
+
+# {ip: [(timestamp, count), ...]}  — one entry per window
+_counters: dict[str, list[float]] = defaultdict(list)
 
 STATUS_STEPS = ["Reported", "Assigned", "In Progress", "Resolved"]
 
 
-@router.get("/track/{reference_id}", response_model=TrackOut)
-def track_issue(reference_id: str, db: Session = Depends(get_db)):
-    issue = db.query(Issue).filter(Issue.reference_id == reference_id.upper()).first()
-    if not issue:
-        raise HTTPException(404, "Complaint not found.")
+def _check_rate_limit(ip: str) -> None:
+    """
+    Raise HTTP 429 if *ip* has made ≥ _RATE_LIMIT calls in the last
+    _WINDOW_SECS seconds.  Modifies _counters in-place.
+    """
+    now = time.monotonic()
+    window_start = now - _WINDOW_SECS
 
-    now = datetime.now(timezone.utc)
-    created = issue.created_at.replace(tzinfo=timezone.utc) if issue.created_at.tzinfo is None else issue.created_at
-    days_open = (now - created).days
-    sla_days = SLA_DAYS.get(issue.category.value, 5)
-    remaining = max(0, sla_days - days_open)
-    if remaining == 0 and issue.status != StatusEnum.Resolved:
-        sla_text = "⚠ Overdue"
-    elif issue.status == StatusEnum.Resolved:
-        sla_text = "Resolved ✓"
-    else:
-        sla_text = f"{remaining} day(s) remaining"
+    # Drop timestamps older than the current window
+    _counters[ip] = [t for t in _counters[ip] if t > window_start]
 
-    last = issue.timeline[-1] if issue.timeline else None
-    last_update = None
-    if last:
-        last_update = {"note": last.note, "time": last.created_at.isoformat()}
+    if len(_counters[ip]) >= _RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "You've made too many requests. "
+                f"Please wait a moment — limit is {_RATE_LIMIT} requests per minute. "
+                "Try again shortly."
+            ),
+        )
 
-    has_after = any(p.kind.value == "after" for p in issue.photos)
-    steps = [
-        TrackStep(label=s, done=_is_done(issue.status.value, s))
-        for s in STATUS_STEPS
-    ]
-
-    return TrackOut(
-        reference_id=issue.reference_id,
-        status=issue.status.value,
-        priority_label=_priority_label(issue),
-        category=issue.category.value,
-        area=issue.address.split(",")[0],
-        team=issue.team.name if issue.team else None,
-        last_update=last_update,
-        days_open=days_open,
-        sla_text=sla_text,
-        has_after_photo=has_after,
-        steps=steps,
-    )
+    _counters[ip].append(now)
 
 
 def _is_done(current: str, step: str) -> bool:
@@ -66,17 +70,50 @@ def _is_done(current: str, step: str) -> bool:
     return order.get(current, 0) >= order.get(step, 99)
 
 
-def _priority_label(issue: Issue) -> str:
-    from datetime import timezone as tz
-    now = datetime.now(tz.utc)
-    created = issue.created_at.replace(tzinfo=tz.utc) if issue.created_at.tzinfo is None else issue.created_at
-    sla = SLA_DAYS.get(issue.category.value, 5)
-    days = (now - created).days
-    time_score = min(100, (days / sla) * 100)
-    sev_score = (issue.severity / 5) * 100
-    ci_score = min(100, issue.affected_count * 5)
-    score = sev_score * 0.40 + ci_score * 0.35 + time_score * 0.25
-    if score >= 75: return "Critical"
-    if score >= 55: return "High"
-    if score >= 35: return "Medium"
-    return "Low"
+# ── Endpoint ─────────────────────────────────────────────────────────────────
+
+@router.get("/track/{reference_id}", response_model=TrackOut)
+def track_issue(
+    reference_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TrackOut:
+    """
+    Public complaint status lookup.
+
+    Returns only public fields — no reporter info, no exact coordinates,
+    no worker names, no internal notes or scores.
+    Rate-limited to 20 requests/min per IP.
+    """
+    # ── Rate limit ──────────────────────────────────────────────────────────
+    client_ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(client_ip)
+
+    # ── Normalise and look up ───────────────────────────────────────────────
+    ref = reference_id.strip().upper()
+    issue = db.query(Issue).filter(Issue.reference_id == ref).first()
+    if not issue:
+        raise HTTPException(404, "Complaint not found. Please check the reference ID.")
+
+    # ── Build public payload (no PII, no coords) ────────────────────────────
+    payload = build_status_payload(issue)
+
+    # ── Steps timeline ──────────────────────────────────────────────────────
+    steps = [
+        TrackStep(label=s, done=_is_done(issue.status.value, s))
+        for s in STATUS_STEPS
+    ]
+
+    return TrackOut(
+        reference_id          = payload["reference_id"],
+        status                = payload["status"],
+        priority_label        = payload["priority_label"],
+        category              = payload["category"],
+        area                  = payload["area"],
+        team                  = payload["team"],
+        last_update           = payload["last_update"],
+        days_open             = payload["days_open"],
+        sla_text              = payload["sla_remaining_or_overdue"],
+        has_after_photo       = payload["has_after_photo"],
+        steps                 = steps,
+    )
