@@ -85,8 +85,9 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, attempt = 1)
 
 /** Multipart fetch — no Content-Type header so browser sets boundary; JWT added. */
 async function multipartFetch<T>(path: string, formData: FormData, method = "POST"): Promise<T> {
+  const UPLOAD_TIMEOUT_MS = 60_000; // 60s — Cloudinary uploads can be slow
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       method,
