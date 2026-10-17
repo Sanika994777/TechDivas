@@ -7,8 +7,7 @@
 
 ### **Project Details :**
 # **CivicFix - Your City. Your Voice. Our Responsibility**.
-<!-- **Live Demo:** <ADD_LIVE_LINK>
-**Demo Video:** <ADD_VIDEO_LINK> -->
+**Live Demo:** (https://tech-divas-xi.vercel.app/)
 
 CivicFix is a civic issue reporting and tracking platform that connects citizens with the teams responsible for resolving local infrastructure and sanitation problems. It enables citizens to report issues, explore nearby complaints, support existing reports, and track resolution progress with transparent status updates and photo evidence.
 
