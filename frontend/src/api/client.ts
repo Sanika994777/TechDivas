@@ -43,8 +43,11 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 }
 
 // ─── Core fetch with timeout + retry ─────────────────────────────────────────
-const TIMEOUT_MS = 25000;
-const MAX_RETRIES = 3;
+const TIMEOUT_MS = 60_000;   // 60s — Render free-tier cold starts can take 30-60s
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 2_000; // 2s pause between retries
+
+function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function apiFetch<T>(path: string, options: RequestInit = {}, attempt = 1): Promise<T> {
   const controller = new AbortController();
@@ -91,10 +94,17 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, attempt = 1)
     return res.json() as Promise<T>;
   } catch (err: unknown) {
     clearTimeout(timer);
-    const isAbort =
-      err instanceof Error && (err.name === "AbortError" || err.message.includes("abort"));
-    if (isAbort && attempt <= MAX_RETRIES) {
+    const isRetryable =
+      err instanceof Error &&
+      (err.name === "AbortError" ||
+       err.message.includes("abort") ||
+       err.message.includes("Failed to fetch") ||
+       err.message.includes("NetworkError") ||
+       err.message.includes("Load failed") ||
+       err.message.includes("network"));
+    if (isRetryable && attempt <= MAX_RETRIES) {
       setWaking(true);
+      await delay(RETRY_DELAY_MS);
       return apiFetch<T>(path, options, attempt + 1);
     }
     if (attempt > MAX_RETRIES) setWaking(false);

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Eye, EyeOff, Loader2, CheckCircle } from "lucide-react";
 import { ChakraIcon } from "@/components/shared/ChakraIcon";
-import { login as apiLogin, register as apiRegister } from "@/api/client";
+import { login as apiLogin, register as apiRegister, BASE_URL } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +23,25 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [serverReady, setServerReady] = useState(true);
+
+  // Pre-emptively wake the Render backend while the user types credentials
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10_000);
+        await fetch(`${BASE_URL}/health`, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!cancelled) setServerReady(true);
+      } catch {
+        // Server is cold — it's fine, the retry logic in apiFetch will handle it
+        if (!cancelled) setServerReady(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   function validate() {
     const e: Record<string, string> = {};
@@ -74,9 +93,11 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
         } else if (err.message.includes("already registered")) {
           msg = "This email is already registered. Please sign in instead.";
         } else if (err.name === "AbortError" || err.message.includes("abort")) {
-          msg = "The server is taking time to wake up. Please wait a few seconds and try again.";
-        } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
-          msg = "Unable to connect to the server. Please check your network connection or server status.";
+          msg = "The server is still waking up (free-tier hosting). Please wait 30 seconds and try again.";
+          setServerReady(false);
+        } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError") || err.message.includes("Load failed")) {
+          msg = "Unable to reach the server. It may be starting up — please refresh the page and try again in a moment.";
+          setServerReady(false);
         } else {
           msg = err.message;
         }
@@ -168,6 +189,13 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
                 ? "Report issues and track their resolution in Pune."
                 : "Welcome back. Your city needs you."}
             </p>
+
+            {!serverReady && (
+              <div className="bg-amber-50 border border-amber-200 rounded-input px-4 py-3 text-sm text-amber-700 mb-4 flex items-center gap-2" role="status">
+                <Loader2 size={16} className="animate-spin flex-shrink-0" />
+                <span>Our server is waking up — first sign-in may take a moment. Please wait…</span>
+              </div>
+            )}
 
             {errors.form && (
               <div className="bg-red-50 border border-red-200 rounded-input px-4 py-3 text-sm text-red-700 mb-4" role="alert">
