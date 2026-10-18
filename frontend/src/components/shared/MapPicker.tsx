@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { MapPin } from "lucide-react";
+import { BASE_URL } from "@/api/client";
 
 // Fix default icon paths broken by Vite
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
@@ -44,9 +45,8 @@ export function MapPicker({ lat, lng, onChange }: MapPickerProps) {
 
   async function reverseGeocode(la: number, lo: number) {
     try {
-      const apiBase = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
       const res = await fetch(
-        `${apiBase}/api/geo/reverse?lat=${la}&lng=${lo}`,
+        `${BASE_URL}/api/geo/reverse?lat=${la}&lng=${lo}`,
         { signal: AbortSignal.timeout(5000) }
       );
       const data = await res.json();

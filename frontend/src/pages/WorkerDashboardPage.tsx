@@ -16,7 +16,7 @@ import { StatusBadge, PriorityBadge } from "@/components/shared/Badges";
 import { ChakraSpinner } from "@/components/shared/ChakraIcon";
 import { cn } from "@/lib/utils";
 
-const BASE  = (import.meta as any).env?.VITE_API_URL ?? "";
+import { BASE_URL as BASE } from "@/api/client";
 const token = () => localStorage.getItem("civicfix_token") ?? "";
 
 /* ---------- types ---------- */

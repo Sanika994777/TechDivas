@@ -36,9 +36,29 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+# Collect allowed origins from settings
+allowed_origins: list[str] = [
+    origin.strip().rstrip("/")
+    for origin in settings.FRONTEND_URL.split(",")
+    if origin.strip()
+]
+
+# Ensure standard local development and deployed frontend origins are present
+default_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "https://tech-divas-xi.vercel.app",
+]
+for origin in default_origins:
+    if origin not in allowed_origins:
+        allowed_origins.append(origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

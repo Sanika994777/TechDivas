@@ -11,7 +11,10 @@
 
 import type { CivicIssue, TimelineEvent, Stats, IssueStatus, IssuePriority, IssueCategory } from "@/types";
 
-export const BASE_URL = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+export const BASE_URL = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://techdivas-civicfix.onrender.com" : "http://localhost:8000")
+).replace(/\/$/, "");
 
 // ─── Waking-up banner state ───────────────────────────────────────────────────
 let _waking = false;
@@ -40,7 +43,7 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 }
 
 // ─── Core fetch with timeout + retry ─────────────────────────────────────────
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 25000;
 const MAX_RETRIES = 3;
 
 async function apiFetch<T>(path: string, options: RequestInit = {}, attempt = 1): Promise<T> {
@@ -60,14 +63,30 @@ async function apiFetch<T>(path: string, options: RequestInit = {}, attempt = 1)
     setWaking(false);
 
     if (res.status === 401) {
-      localStorage.removeItem("civicfix_token");
-      localStorage.removeItem("civicfix_user");
-      window.location.replace("/login");
-      throw new Error("Unauthorized");
+      if (!path.startsWith("/api/auth/")) {
+        localStorage.removeItem("civicfix_token");
+        localStorage.removeItem("civicfix_user");
+        window.location.replace("/login");
+      }
+      let errorMsg = "Invalid email or password.";
+      try {
+        const errorData = await res.json();
+        if (errorData?.detail) errorMsg = errorData.detail;
+      } catch {
+        // default message
+      }
+      throw new Error(errorMsg);
     }
     if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(`API ${res.status}: ${text}`);
+      let errorMsg = `API ${res.status}: ${res.statusText}`;
+      try {
+        const errorData = await res.json();
+        if (errorData?.detail) errorMsg = errorData.detail;
+      } catch {
+        const text = await res.text().catch(() => res.statusText);
+        if (text) errorMsg = text;
+      }
+      throw new Error(errorMsg);
     }
     return res.json() as Promise<T>;
   } catch (err: unknown) {
@@ -98,14 +117,30 @@ async function multipartFetch<T>(path: string, formData: FormData, method = "POS
     clearTimeout(timer);
     setWaking(false);
     if (res.status === 401) {
-      localStorage.removeItem("civicfix_token");
-      localStorage.removeItem("civicfix_user");
-      window.location.replace("/login");
-      throw new Error("Unauthorized");
+      if (!path.startsWith("/api/auth/")) {
+        localStorage.removeItem("civicfix_token");
+        localStorage.removeItem("civicfix_user");
+        window.location.replace("/login");
+      }
+      let errorMsg = "Unauthorized";
+      try {
+        const errorData = await res.json();
+        if (errorData?.detail) errorMsg = errorData.detail;
+      } catch {
+        // default message
+      }
+      throw new Error(errorMsg);
     }
     if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(`API ${res.status}: ${text}`);
+      let errorMsg = `API ${res.status}: ${res.statusText}`;
+      try {
+        const errorData = await res.json();
+        if (errorData?.detail) errorMsg = errorData.detail;
+      } catch {
+        const text = await res.text().catch(() => res.statusText);
+        if (text) errorMsg = text;
+      }
+      throw new Error(errorMsg);
     }
     return res.json() as Promise<T>;
   } catch (err: unknown) {

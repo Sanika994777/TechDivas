@@ -28,7 +28,11 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
     const e: Record<string, string> = {};
     if (isRegister && form.name.trim().length < 2) e.name = "Name must be at least 2 characters.";
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = "Enter a valid email address.";
-    if (form.password.length < 6) e.password = "Password must be at least 6 characters.";
+    if (isRegister && form.password.length < 8) {
+      e.password = "Password must be at least 8 characters.";
+    } else if (!isRegister && !form.password) {
+      e.password = "Please enter your password.";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   }
@@ -37,6 +41,7 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
     e.preventDefault();
     if (!validate()) return;
     setLoading(true);
+    setErrors({});
     try {
       if (isRegister) {
         const res = await apiRegister(form.name, form.email, form.password);
@@ -44,17 +49,39 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
           { name: res.user?.name ?? form.name, email: res.user?.email ?? form.email, role: (res.role ?? "citizen") as "citizen" | "worker" | "admin" },
           res.token
         );
+        setSuccess(true);
+        setTimeout(() => navigate(from, { replace: true }), 800);
       } else {
         const res = await apiLogin(form.email, form.password);
+        const role = (res.role ?? "citizen") as "citizen" | "worker" | "admin";
         auth.login(
-          { name: res.user?.name ?? form.email.split("@")[0].replace(/[._]/g, " "), email: res.user?.email ?? form.email, role: (res.role ?? "citizen") as "citizen" | "worker" | "admin" },
+          { name: res.user?.name ?? form.email.split("@")[0].replace(/[._]/g, " "), email: res.user?.email ?? form.email, role },
           res.token
         );
+        setSuccess(true);
+        let target = from;
+        if (target === "/") {
+          if (role === "admin") target = "/admin";
+          else if (role === "worker") target = "/worker";
+        }
+        setTimeout(() => navigate(target, { replace: true }), 800);
       }
-      setSuccess(true);
-      setTimeout(() => navigate(from, { replace: true }), 1000);
-    } catch {
-      setErrors({ form: "Something went wrong. Please try again." });
+    } catch (err: unknown) {
+      let msg = "Something went wrong. Please try again.";
+      if (err instanceof Error) {
+        if (err.message.includes("Invalid") || err.message.includes("credentials")) {
+          msg = "Invalid email or password. Please check your credentials.";
+        } else if (err.message.includes("already registered")) {
+          msg = "This email is already registered. Please sign in instead.";
+        } else if (err.name === "AbortError" || err.message.includes("abort")) {
+          msg = "The server is taking time to wake up. Please wait a few seconds and try again.";
+        } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
+          msg = "Unable to connect to the server. Please check your network connection or server status.";
+        } else {
+          msg = err.message;
+        }
+      }
+      setErrors({ form: msg });
     } finally {
       setLoading(false);
     }
@@ -188,6 +215,49 @@ export function AuthPage({ mode = "login" }: AuthPageProps) {
                 {isRegister ? "Sign in" : "Create account"}
               </Link>
             </p>
+
+            {!isRegister && (
+              <div className="mt-6 pt-5 border-t border-gray-100">
+                <p className="text-xs font-semibold text-gray-500 mb-2.5 uppercase tracking-wider text-center">
+                  Quick Demo Accounts (Autofill)
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm({ name: "", email: "citizen@demo.com", password: "Demo@1234" });
+                      setErrors({});
+                    }}
+                    className="px-2 py-1.5 text-xs font-medium border border-gray-200 rounded-lg hover:border-navy hover:text-navy hover:bg-navy/5 transition-colors text-center"
+                  >
+                    Citizen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm({ name: "", email: "worker@demo.com", password: "Demo@1234" });
+                      setErrors({});
+                    }}
+                    className="px-2 py-1.5 text-xs font-medium border border-gray-200 rounded-lg hover:border-navy hover:text-navy hover:bg-navy/5 transition-colors text-center"
+                  >
+                    Worker
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm({ name: "", email: "admin@demo.com", password: "Demo@1234" });
+                      setErrors({});
+                    }}
+                    className="px-2 py-1.5 text-xs font-medium border border-gray-200 rounded-lg hover:border-navy hover:text-navy hover:bg-navy/5 transition-colors text-center"
+                  >
+                    Admin
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 text-center mt-2">
+                  Password: <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-600 font-mono">Demo@1234</code>
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
