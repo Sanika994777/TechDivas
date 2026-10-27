@@ -13,7 +13,7 @@ import type { CivicIssue, TimelineEvent, Stats, IssueStatus, IssuePriority, Issu
 
 export const BASE_URL = (
   import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD ? "https://techdivas-civicfix.onrender.com" : "http://localhost:8000")
+  (import.meta.env.PROD ? "" : "http://localhost:8000")
 ).replace(/\/$/, "");
 
 // ─── Waking-up banner state ───────────────────────────────────────────────────
